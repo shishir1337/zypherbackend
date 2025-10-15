@@ -31,6 +31,13 @@ export class CandleGenerator {
   private consolidationCounter: number = 0; // Force consolidation after big moves
   private eventCooldown: number = 0; // Cooldown for random events
   
+  // New realistic features
+  private dynamicEquilibrium: number = 0; // Current market equilibrium
+  private manualPumpHistory: Array<{price: number, timestamp: number}> = []; // Track manual pumps
+  private equilibriumCounter: number = 0; // Track sideways movement
+  private lastEquilibriumCheck: number = 0; // Last time we checked for equilibrium
+  private priceStabilized: boolean = false; // Whether price has found equilibrium
+  
   // Realistic limits (based on Solana analysis)
   private readonly MAX_NORMAL_CHANGE = 0.025; // 2.5% per candle (normal)
   private readonly MAX_VOLATILE_CHANGE = 0.05; // 5% per candle (volatile)
@@ -50,9 +57,13 @@ export class CandleGenerator {
     this.trendStrength = trendStrength;
     this.volumeBase = volumeBase;
     this.lastPrice = basePrice;
+    this.dynamicEquilibrium = basePrice; // Start with base price as equilibrium
     
     // Initialize support/resistance at base price
     this.addSupportResistance(basePrice, 1.0);
+    
+    // Add psychological levels around base price
+    this.addPsychologicalLevels(basePrice);
   }
 
   /**
@@ -102,6 +113,9 @@ export class CandleGenerator {
         manualSpeed,
         manualIntensity
       );
+      
+      // Track manual pumps for dynamic equilibrium adjustment
+      this.trackManualPump(previousClose + priceChange, now);
     } else {
       // AUTO MODE - HYPER-REALISTIC
       priceChange = this.calculateRealisticPriceChange(
@@ -249,11 +263,25 @@ export class CandleGenerator {
       change *= 1.3; // Amplify moves during volatile periods
     }
     
-    // 7. Mean reversion (stronger at extremes)
-    const deviation = (currentPrice - this.basePrice) / this.basePrice;
-    const meanReversionStrength = Math.abs(deviation) * 0.05; // Stronger further from base
-    const meanReversion = -deviation * meanReversionStrength * currentPrice;
-    change += meanReversion;
+    // 7. REALISTIC Mean reversion (toward dynamic equilibrium, not fixed base)
+    const deviation = (currentPrice - this.dynamicEquilibrium) / this.dynamicEquilibrium;
+    
+    // Only apply mean reversion if price is significantly far from equilibrium
+    if (Math.abs(deviation) > 0.15) { // Only if >15% away from equilibrium
+      // Weaker mean reversion that doesn't force back to original base
+      const meanReversionStrength = Math.abs(deviation) * 0.02; // Reduced from 0.05
+      const meanReversion = -deviation * meanReversionStrength * currentPrice;
+      change += meanReversion;
+      
+      console.log(`🔄 Mean reversion toward equilibrium $${this.dynamicEquilibrium.toFixed(2)}: ${(deviation * 100).toFixed(1)}% deviation`);
+    }
+    
+    // 8. Check if price has stabilized (equilibrium detection)
+    if (this.checkPriceStabilization(currentPrice, change)) {
+      // Price has found equilibrium, reduce movement
+      change *= 0.3; // Reduce movement by 70%
+      console.log(`⚖️ Price stabilized at $${currentPrice.toFixed(2)}, reducing movement`);
+    }
     
     return change;
   }
@@ -502,19 +530,57 @@ export class CandleGenerator {
       this.addSupportResistance(low, 0.6);
     }
     
-    // Round number support/resistance (psychological levels)
-    const roundLevels = [10, 25, 50, 100, 150, 200, 250, 300, 400, 500];
-    for (const level of roundLevels) {
-      if (Math.abs(close - level) / level < 0.05) {
-        // Within 5% of round number
-        this.addSupportResistance(level, 0.8); // Strong psychological level
-      }
+    // Enhanced psychological levels based on current price range
+    this.addDynamicPsychologicalLevels(close);
+    
+    // Add strong support/resistance around dynamic equilibrium
+    const equilibriumDistance = Math.abs(close - this.dynamicEquilibrium) / this.dynamicEquilibrium;
+    if (equilibriumDistance < 0.10) { // Within 10% of equilibrium
+      this.addSupportResistance(this.dynamicEquilibrium, 0.95); // Very strong level
     }
     
-    // Clean up old/weak levels
+    // Clean up old/weak levels but keep important ones
     this.supportResistanceLevels = this.supportResistanceLevels
-      .filter(level => level.strength > 0.2) // Remove weak levels
-      .slice(-15); // Keep only last 15 levels
+      .filter(level => {
+        // Keep levels that are either strong OR near current price
+        const nearPrice = Math.abs(level.price - close) / close < 0.15; // Within 15%
+        const isStrong = level.strength > 0.3;
+        const isEquilibrium = Math.abs(level.price - this.dynamicEquilibrium) / this.dynamicEquilibrium < 0.05;
+        
+        return isStrong || nearPrice || isEquilibrium;
+      })
+      .slice(-20); // Keep up to 20 levels
+  }
+
+  /**
+   * Add dynamic psychological levels based on current price
+   */
+  private addDynamicPsychologicalLevels(currentPrice: number): void {
+    let levels: number[] = [];
+    
+    // Generate psychological levels based on current price
+    if (currentPrice < 10) {
+      levels = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    } else if (currentPrice < 25) {
+      levels = [10, 12, 15, 18, 20, 22, 25];
+    } else if (currentPrice < 50) {
+      levels = [20, 25, 30, 35, 40, 45, 50];
+    } else if (currentPrice < 100) {
+      levels = [25, 30, 40, 50, 60, 70, 75, 80, 90, 100];
+    } else if (currentPrice < 200) {
+      levels = [50, 75, 100, 125, 150, 175, 200];
+    } else {
+      levels = [100, 150, 200, 250, 300, 400, 500];
+    }
+    
+    for (const level of levels) {
+      const distance = Math.abs(currentPrice - level) / level;
+      if (distance < 0.20) { // Within 20% of current price
+        // Strength depends on how close it is to current price
+        const strength = Math.max(0.6, 0.9 - (distance * 2)); // 0.6 to 0.9 strength
+        this.addSupportResistance(level, strength);
+      }
+    }
   }
 
   /**
@@ -692,6 +758,138 @@ export class CandleGenerator {
   }
 
   /**
+   * Track manual pumps to adjust dynamic equilibrium
+   */
+  private trackManualPump(price: number, timestamp: number): void {
+    // Only track significant manual moves (>20% from current equilibrium)
+    const deviation = Math.abs(price - this.dynamicEquilibrium) / this.dynamicEquilibrium;
+    
+    if (deviation > 0.20) {
+      this.manualPumpHistory.push({ price, timestamp });
+      
+      // Keep only recent pumps (last 24 hours)
+      const oneDayAgo = timestamp - (24 * 60 * 60 * 1000);
+      this.manualPumpHistory = this.manualPumpHistory.filter(p => p.timestamp > oneDayAgo);
+      
+      // Update dynamic equilibrium based on recent manual activity
+      this.updateDynamicEquilibrium();
+      
+      console.log(`📈 Manual pump tracked: $${price.toFixed(2)} (${(deviation * 100).toFixed(1)}% from equilibrium)`);
+    }
+  }
+
+  /**
+   * Update dynamic equilibrium based on manual pump history
+   */
+  private updateDynamicEquilibrium(): void {
+    if (this.manualPumpHistory.length === 0) return;
+    
+    // Calculate new equilibrium based on recent pumps
+    // Use weighted average where recent pumps have more weight
+    const now = Date.now();
+    let totalWeight = 0;
+    let weightedPrice = 0;
+    
+    for (const pump of this.manualPumpHistory) {
+      // Weight decreases with time (recent pumps matter more)
+      const ageHours = (now - pump.timestamp) / (1000 * 60 * 60);
+      const weight = Math.max(0.1, 1.0 - (ageHours / 24)); // 0.1 to 1.0 weight
+      
+      weightedPrice += pump.price * weight;
+      totalWeight += weight;
+    }
+    
+    if (totalWeight > 0) {
+      const newEquilibrium = weightedPrice / totalWeight;
+      
+      // Only update if significantly different (>10%)
+      const change = Math.abs(newEquilibrium - this.dynamicEquilibrium) / this.dynamicEquilibrium;
+      if (change > 0.10) {
+        const oldEquilibrium = this.dynamicEquilibrium;
+        this.dynamicEquilibrium = newEquilibrium;
+        
+        // Add strong support/resistance at new equilibrium
+        this.addSupportResistance(this.dynamicEquilibrium, 0.9);
+        
+        console.log(`⚖️ Dynamic equilibrium updated: $${oldEquilibrium.toFixed(2)} → $${this.dynamicEquilibrium.toFixed(2)}`);
+      }
+    }
+  }
+
+  /**
+   * Add psychological price levels for realistic support/resistance
+   */
+  private addPsychologicalLevels(basePrice: number): void {
+    // Add round number levels around base price
+    const levels = [];
+    
+    // Generate levels based on base price range
+    if (basePrice < 50) {
+      levels.push(5, 10, 15, 20, 25, 30, 35, 40, 45, 50);
+    } else if (basePrice < 100) {
+      levels.push(25, 30, 35, 40, 50, 60, 70, 75, 80, 90, 100);
+    } else {
+      levels.push(50, 75, 100, 125, 150, 200, 250, 300, 400, 500);
+    }
+    
+    for (const level of levels) {
+      if (Math.abs(level - basePrice) / basePrice < 2.0) { // Within 200% of base
+        this.addSupportResistance(level, 0.8); // Strong psychological level
+      }
+    }
+  }
+
+  /**
+   * Check if price has stabilized and found equilibrium
+   */
+  private checkPriceStabilization(currentPrice: number, priceChange: number): boolean {
+    const now = Date.now();
+    
+    // Only check every 10 candles to avoid excessive computation
+    if (now - this.lastEquilibriumCheck < 600000) { // 10 minutes
+      return this.priceStabilized;
+    }
+    
+    this.lastEquilibriumCheck = now;
+    
+    // Check recent volatility
+    const recentVolatility = this.getRecentVolatility(10); // Last 10 candles
+    const priceChangePercent = Math.abs(priceChange / currentPrice);
+    
+    // Price is stable if:
+    // 1. Recent volatility is very low (<1%)
+    // 2. Current price change is small (<0.5%)
+    // 3. Price is near dynamic equilibrium (<5% deviation)
+    const nearEquilibrium = Math.abs(currentPrice - this.dynamicEquilibrium) / this.dynamicEquilibrium < 0.05;
+    
+    if (recentVolatility < 0.01 && priceChangePercent < 0.005 && nearEquilibrium) {
+      this.equilibriumCounter++;
+      
+      if (this.equilibriumCounter >= 5) { // Stable for 5 consecutive checks
+        this.priceStabilized = true;
+        this.equilibriumCounter = 0;
+        return true;
+      }
+    } else {
+      this.equilibriumCounter = 0;
+      this.priceStabilized = false;
+    }
+    
+    return this.priceStabilized;
+  }
+
+  /**
+   * Get recent volatility (last N candles)
+   */
+  private getRecentVolatility(candleCount: number): number {
+    if (this.volatilityHistory.length === 0) return 0;
+    
+    const recentVolatilities = this.volatilityHistory.slice(-candleCount);
+    const sum = recentVolatilities.reduce((a, b) => a + b, 0);
+    return sum / recentVolatilities.length;
+  }
+
+  /**
    * Get current generator state (for debugging)
    */
   getState() {
@@ -708,7 +906,12 @@ export class CandleGenerator {
       consolidationCounter: this.consolidationCounter,
       eventCooldown: this.eventCooldown,
       averageVolatility: this.getAverageVolatility(),
-      movingAverage: this.getMovingAverage()
+      movingAverage: this.getMovingAverage(),
+      // New realistic features
+      dynamicEquilibrium: this.dynamicEquilibrium,
+      manualPumpHistory: this.manualPumpHistory.length,
+      priceStabilized: this.priceStabilized,
+      equilibriumCounter: this.equilibriumCounter
     };
   }
 }
