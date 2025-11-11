@@ -843,12 +843,13 @@ NODE_ENV=development
 AUTO_INTERVAL_MS=60000
 
 # Supabase
-SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_URL=https://your-selfhosted-supabase.example.com
 SUPABASE_ANON_KEY=your-anon-key
+NEXT_PUBLIC_SUPABASE_URL=https://your-selfhosted-supabase.example.com
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 
-# Redis (Upstash)
-UPSTASH_REDIS_REST_URL=https://your-redis.upstash.io
-UPSTASH_REDIS_REST_TOKEN=your-redis-token
+# Redis
+REDIS_URL=redis://user:password@host:port/db
 ```
 
 ### **Trading Parameters**

@@ -23,7 +23,7 @@ router.get('/test', async (req: Request, res: Response) => {
       data: { 
         connected: true,
         testValue: retrievedValue,
-        url: process.env.UPSTASH_REDIS_REST_URL
+        url: process.env.REDIS_URL
       },
     };
 

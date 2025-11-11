@@ -102,7 +102,7 @@ Your comprehensive Zypher Trading Data API is now **100% functional** with all r
                                  │
                     ┌──────────────────┐
                     │   Redis Cache    │
-                    │  (Upstash)       │
+                    │  (Self-hosted)   │
                     │  Live Ticks      │
                     └──────────────────┘
 ```
